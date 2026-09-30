@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import type { User } from 'firebase/auth';
 import { onAuthChange, getUserProfile } from '../services/auth';
 import type { UserProfile } from '../types';
 
+// Minimal User interface matching what we use from Firebase User
+interface MockUser {
+  uid: string;
+  email: string | null;
+}
+
 interface AuthContextType {
-  user: User | null;
+  user: MockUser | null;
   profile: UserProfile | null;
   loading: boolean;
   refreshProfile: () => Promise<void>;
@@ -20,7 +25,7 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<MockUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -33,7 +38,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const unsubscribe = onAuthChange(async (firebaseUser) => {
-      setUser(firebaseUser);
+      setUser(firebaseUser ? { uid: firebaseUser.uid, email: firebaseUser.email } : null);
       if (firebaseUser) {
         try {
           const p = await getUserProfile(firebaseUser.uid);

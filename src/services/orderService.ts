@@ -1,44 +1,46 @@
-import {
-  collection,
-  doc,
-  addDoc,
-  updateDoc,
-  onSnapshot,
-  query,
-  where,
-  orderBy,
-  serverTimestamp,
-  runTransaction,
-  getDoc,
-  getDocs,
-  limit,
-} from 'firebase/firestore';
-import { db } from './firebase';
 import type { Order, OrderItem, OrderStatus } from '../types';
+import { getFoodItems, saveFoodItems } from './foodService';
 
-const ORDERS_COLLECTION = 'orders';
-const FOOD_COLLECTION = 'foodItems';
-const CANTEEN_STATUS_DOC = 'canteenStatus/main';
+// ─── Mock Order Service (localStorage) ────────────────────────────────
 
-const generateTokenNumber = async (): Promise<string> => {
+const ORDERS_KEY = 'canteenpulse_orders';
+const TOKEN_COUNTER_KEY = 'canteenpulse_token_counter';
+
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+
+const getOrders = (): Order[] => {
+  try {
+    const raw = localStorage.getItem(ORDERS_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw).map((o: any) => ({
+      ...o,
+      createdAt: new Date(o.createdAt),
+      updatedAt: new Date(o.updatedAt),
+    }));
+  } catch {
+    return [];
+  }
+};
+
+const saveOrders = (orders: Order[]) => {
+  localStorage.setItem(ORDERS_KEY, JSON.stringify(orders));
+  orderListeners.forEach((cb) => cb(orders));
+};
+
+const generateTokenNumber = (): string => {
   const today = new Date();
   const dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;
+  const key = `${TOKEN_COUNTER_KEY}_${dateStr}`;
 
-  const tokenDocRef = doc(db, 'tokenCounters', dateStr);
+  let count = parseInt(localStorage.getItem(key) || '0', 10);
+  count += 1;
+  localStorage.setItem(key, String(count));
 
-  const newToken = await runTransaction(db, async (transaction) => {
-    const tokenDoc = await transaction.get(tokenDocRef);
-    let currentCount = 0;
-    if (tokenDoc.exists()) {
-      currentCount = tokenDoc.data().count || 0;
-    }
-    const nextCount = currentCount + 1;
-    transaction.set(tokenDocRef, { count: nextCount, date: dateStr });
-    return `A${String(nextCount).padStart(3, '0')}`;
-  });
-
-  return newToken;
+  return `A${String(count).padStart(3, '0')}`;
 };
+
+// ─── Listeners ────────────────────────────────────────────────────────
+const orderListeners: Array<(orders: Order[]) => void> = [];
 
 export const placeOrder = async (
   userId: string,
@@ -46,169 +48,129 @@ export const placeOrder = async (
   items: OrderItem[],
   totalAmount: number
 ): Promise<string> => {
-  // Use a transaction to verify stock and create order atomically
-  const orderId = await runTransaction(db, async (transaction) => {
-    // Verify stock for all items
-    for (const item of items) {
-      const foodRef = doc(db, FOOD_COLLECTION, item.foodId);
-      const foodDoc = await transaction.get(foodRef);
-      if (!foodDoc.exists()) {
-        throw new Error(`${item.name} is no longer available.`);
-      }
-      const foodData = foodDoc.data();
-      if (!foodData.available) {
-        throw new Error(`${item.name} is currently unavailable.`);
-      }
-      if (foodData.stock < item.quantity) {
-        throw new Error(
-          `Not enough stock for ${item.name}. Only ${foodData.stock} left.`
-        );
-      }
+  // Deduct stock
+  const foodItems = getFoodItems();
+  for (const item of items) {
+    const food = foodItems.find((f) => f.id === item.foodId);
+    if (!food) throw new Error(`${item.name} is no longer available.`);
+    if (!food.available) throw new Error(`${item.name} is currently unavailable.`);
+    if (food.stock < item.quantity) {
+      throw new Error(`Not enough stock for ${item.name}. Only ${food.stock} left.`);
     }
-
-    // Deduct stock
-    for (const item of items) {
-      const foodRef = doc(db, FOOD_COLLECTION, item.foodId);
-      const foodDoc = await transaction.get(foodRef);
-      const currentStock = foodDoc.data()!.stock;
-      const newStock = currentStock - item.quantity;
-      transaction.update(foodRef, {
-        stock: newStock,
-        available: newStock > 0,
-        updatedAt: serverTimestamp(),
-      });
-    }
-
-    // We need to generate token outside transaction since it uses its own transaction
-    return null;
-  });
-
-  // Generate token after stock transaction succeeds
-  const tokenNumber = await generateTokenNumber();
-
-  // Get estimated time from canteen status
-  let estimatedTime = 10;
-  try {
-    const statusDoc = await getDoc(doc(db, 'canteenStatus', 'main'));
-    if (statusDoc.exists()) {
-      estimatedTime = statusDoc.data().avgPreparationTime || 10;
-    }
-  } catch {
-    // Use default
+    food.stock -= item.quantity;
+    if (food.stock <= 0) food.available = false;
+    food.updatedAt = new Date();
   }
+  saveFoodItems(foodItems);
 
-  // Create the order
-  const orderRef = await addDoc(collection(db, ORDERS_COLLECTION), {
+  const tokenNumber = generateTokenNumber();
+  const orderId = generateId();
+
+  const order: Order = {
+    id: orderId,
     userId,
     studentName,
     items,
     totalAmount,
     tokenNumber,
-    status: 'placed' as OrderStatus,
-    estimatedTime,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+    status: 'placed',
+    estimatedTime: 10,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 
-  // Update queue count
+  const orders = getOrders();
+  orders.unshift(order);
+  saveOrders(orders);
+
+  // Update canteen status queue
   try {
-    const statusRef = doc(db, 'canteenStatus', 'main');
-    const statusDoc = await getDoc(statusRef);
-    if (statusDoc.exists()) {
-      const currentQueue = statusDoc.data().queueCount || 0;
-      await updateDoc(statusRef, {
-        queueCount: currentQueue + 1,
-        updatedAt: serverTimestamp(),
-      });
+    const statusRaw = localStorage.getItem('canteenpulse_canteen_status');
+    if (statusRaw) {
+      const status = JSON.parse(statusRaw);
+      status.queueCount = (status.queueCount || 0) + 1;
+      status.updatedAt = new Date().toISOString();
+      localStorage.setItem('canteenpulse_canteen_status', JSON.stringify(status));
     }
   } catch {
     // Non-critical
   }
 
-  return orderRef.id;
+  return orderId;
 };
 
 export const updateOrderStatus = async (orderId: string, status: OrderStatus) => {
-  const ref = doc(db, ORDERS_COLLECTION, orderId);
-  return updateDoc(ref, { status, updatedAt: serverTimestamp() });
+  const orders = getOrders();
+  const idx = orders.findIndex((o) => o.id === orderId);
+  if (idx !== -1) {
+    orders[idx].status = status;
+    orders[idx].updatedAt = new Date();
+    saveOrders(orders);
+  }
 };
 
 export const subscribeUserOrders = (
   userId: string,
   callback: (orders: Order[]) => void
 ): (() => void) => {
-  const q = query(
-    collection(db, ORDERS_COLLECTION),
-    where('userId', '==', userId),
-    orderBy('createdAt', 'desc')
-  );
-  return onSnapshot(q, (snapshot) => {
-    const orders: Order[] = snapshot.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate() || new Date(),
-        updatedAt: data.updatedAt?.toDate() || new Date(),
-      } as Order;
-    });
-    callback(orders);
-  });
+  const handler = (orders: Order[]) => {
+    const userOrders = orders
+      .filter((o) => o.userId === userId)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    callback(userOrders);
+  };
+
+  orderListeners.push(handler);
+
+  // Fire immediately
+  setTimeout(() => handler(getOrders()), 50);
+
+  return () => {
+    const idx = orderListeners.indexOf(handler);
+    if (idx !== -1) orderListeners.splice(idx, 1);
+  };
 };
 
 export const subscribeAllOrders = (callback: (orders: Order[]) => void): (() => void) => {
-  const q = query(collection(db, ORDERS_COLLECTION), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snapshot) => {
-    const orders: Order[] = snapshot.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate() || new Date(),
-        updatedAt: data.updatedAt?.toDate() || new Date(),
-      } as Order;
-    });
-    callback(orders);
-  });
+  const handler = (orders: Order[]) => {
+    const sorted = [...orders].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    callback(sorted);
+  };
+
+  orderListeners.push(handler);
+  setTimeout(() => handler(getOrders()), 50);
+
+  return () => {
+    const idx = orderListeners.indexOf(handler);
+    if (idx !== -1) orderListeners.splice(idx, 1);
+  };
 };
 
 export const subscribeTodayOrders = (callback: (orders: Order[]) => void): (() => void) => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const q = query(
-    collection(db, ORDERS_COLLECTION),
-    where('createdAt', '>=', today),
-    orderBy('createdAt', 'desc')
-  );
-  return onSnapshot(q, (snapshot) => {
-    const orders: Order[] = snapshot.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        ...data,
-        createdAt: data.createdAt?.toDate() || new Date(),
-        updatedAt: data.updatedAt?.toDate() || new Date(),
-      } as Order;
-    });
-    callback(orders);
-  });
+  const handler = (orders: Order[]) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayOrders = orders
+      .filter((o) => new Date(o.createdAt).getTime() >= today.getTime())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    callback(todayOrders);
+  };
+
+  orderListeners.push(handler);
+  setTimeout(() => handler(getOrders()), 50);
+
+  return () => {
+    const idx = orderListeners.indexOf(handler);
+    if (idx !== -1) orderListeners.splice(idx, 1);
+  };
 };
 
 export const getActiveOrders = async (): Promise<Order[]> => {
-  const q = query(
-    collection(db, ORDERS_COLLECTION),
-    where('status', 'in', ['placed', 'accepted', 'preparing', 'ready']),
-    orderBy('createdAt', 'desc'),
-    limit(50)
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => {
-    const data = d.data();
-    return {
-      id: d.id,
-      ...data,
-      createdAt: data.createdAt?.toDate() || new Date(),
-      updatedAt: data.updatedAt?.toDate() || new Date(),
-    } as Order;
-  });
+  const activeStatuses: OrderStatus[] = ['placed', 'accepted', 'preparing', 'ready'];
+  return getOrders()
+    .filter((o) => activeStatuses.includes(o.status))
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 50);
 };

@@ -1,9 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { db } from '../../services/firebase';
 import { useAuth } from '../../context/AuthContext';
 import { submitFeedback } from '../../services/realtimeService';
+import { subscribeAllOrders } from '../../services/orderService';
 import OrderTimeline, { getStatusColor, getStatusLabel } from '../../components/OrderTimeline';
 import LiveBadge from '../../components/LiveBadge';
 import type { Order } from '../../types';
@@ -23,15 +22,10 @@ const OrderDetailPage: React.FC = () => {
 
   useEffect(() => {
     if (!id) return;
-    const unsub = onSnapshot(doc(db, 'orders', id), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setOrder({
-          id: snap.id,
-          ...data,
-          createdAt: data.createdAt?.toDate() || new Date(),
-          updatedAt: data.updatedAt?.toDate() || new Date(),
-        } as Order);
+    const unsub = subscribeAllOrders((orders) => {
+      const found = orders.find((o) => o.id === id);
+      if (found) {
+        setOrder(found);
       }
       setLoading(false);
     });
