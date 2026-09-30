@@ -48,48 +48,31 @@ Students see live crowd levels, queue lengths, menu availability, and order stat
 
 ---
 
-## 🚀 Getting Started
+## 🚀 Quick Start (Instant Demo)
 
-### Prerequisites
-- Node.js 18+
-- A Firebase project with Authentication and Firestore enabled
+**No Firebase setup required!** The app runs out of the box with built-in reactive mock data and instant authentication.
 
-### 1. Clone & Install
+### Option A: Windows 1-Click
+Double-click **`start.bat`** in the project folder. It will install packages (if needed), launch the dev server, and open your browser automatically!
+
+### Option B: Terminal
 ```bash
-git clone https://github.com/sadhana-s-codez/Canteenpulse-Canteen-and-Food-Tracker-app.git
-cd Canteenpulse-Canteen-and-Food-Tracker-app
 npm install
-```
-
-### 2. Configure Firebase
-Copy `.env.example` to `.env` and fill in your Firebase credentials:
-```bash
-cp .env.example .env
-```
-
-```env
-VITE_FIREBASE_API_KEY=your-api-key
-VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=your-project-id
-VITE_FIREBASE_STORAGE_BUCKET=your-project.appspot.com
-VITE_FIREBASE_MESSAGING_SENDER_ID=your-sender-id
-VITE_FIREBASE_APP_ID=your-app-id
-```
-
-### 3. Enable Firebase Services
-In your Firebase Console:
-1. **Authentication** → Enable Email/Password sign-in
-2. **Cloud Firestore** → Create a database (start in test mode)
-
-### 4. Run Development Server
-```bash
 npm run dev
 ```
+Open **http://localhost:5173/** in your browser.
 
-### 5. Seed Sample Data
-1. Register an account and manually set its role to `admin` in Firestore (`users` collection → your user doc → `role: "admin"`)
-2. Navigate to **Admin → Settings → Seed Data** to populate sample food items and categories
-3. Click **Initialize Canteen Status** to create the canteen status document
+---
+
+## 🔑 Demo Login (Any Password Works)
+
+| Role | Email Format | Password | Access |
+|---|---|---|---|
+| **Admin** | Any email containing `admin` (e.g., `admin@test.com`) | *any password* | Full dashboard, food CRUD, user roles, analytics |
+| **Staff** | Any email containing `staff` (e.g., `staff@test.com`) | *any password* | Kitchen orders, crowd/queue control, menu stock |
+| **Student** | Any other email (e.g., `student@test.com`) | *any password* | Menu, cart, orders, live token tracker, reviews |
+
+*Tip: You don't even need to register first—simply enter any email and password on the Login page and click **Sign In**!*
 
 ---
 
